@@ -1,0 +1,132 @@
+esphome:
+  name: reterminal
+  friendly_name: reTerminal
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "5DcIShZ+Vs1xdzaUPexRETOHrJC3RFsXoAg38lTlbtw="
+  actions:
+    - action: update_display
+      variables:
+        message: string
+      then:
+        - text.set:
+            id: display_text1
+            value: !lambda 'return message;'
+        - component.update: epaper_display
+ota:
+  - platform: esphome
+    password: "b49a1482da5019087c5b74f6ce602c7d"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Reterminal Fallback Hotspot"
+    password: "pO7Mcnss4ncD"
+
+captive_portal:
+    
+################
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/lublak/esphome
+      ref: dev
+    components: [ waveshare_epaper ]
+
+# define font to display words
+font:
+  - file: "fonts/Theinhardt-Medium.ttf"
+    id: myFont24
+    size: 145
+
+#    extras:
+#      - file: "fonts/materialdesignicons-webfont.ttf"
+#        glyphs: [
+#          "\U000F02D1", # mdi-heart
+#          "\U000F05D4", # mdi-airplane-landing
+#          ]
+
+  - file: "fonts/Theinhardt-Medium.ttf"
+    id: Theinhardt_Medium_32
+    size: 32
+  - file: "fonts/Theinhardt-Medium.ttf"
+    id: Theinhardt_Medium_48
+    size: 48
+
+text:
+  - platform: template
+    name: "Display Title"
+    id: display_title
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+        - component.update: epaper_display
+  - platform: template
+    name: "Display Text 1"
+    id: display_text1
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+        - component.update: epaper_display
+  - platform: template
+    name: "Display Text 2"
+    id: display_text2
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+        - component.update: epaper_display
+
+
+
+# define SPI interface
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+
+display:
+  - platform: waveshare_epaper
+    id: epaper_display
+    model: 7.30in-e
+    cs_pin: GPIO10
+    dc_pin: GPIO11
+    reset_pin:
+      number: GPIO12
+      inverted: false
+    busy_pin:
+      number: GPIO13
+      inverted: true
+    update_interval: 300s
+    lambda: |-
+      const auto RED = Color(255, 0, 0, 0);
+      const auto GREEN = Color(0, 255, 0, 0);
+      const auto BLUE = Color(0, 0, 255, 0);
+      const auto BLACK   = Color(0,   0,   0,   0);
+
+      it.printf(-5, -30, id(myFont24), RED, "%s", id(display_title).state.c_str());
+      it.printf(0, 130, id(Theinhardt_Medium_32), GREEN, "%s", id(display_text1).state.c_str());
+      it.printf(0, 230, id(Theinhardt_Medium_48), BLUE, "%s", id(display_text2).state.c_str());
+
+#    it.filled_rectangle(0, 0, 800, 200, BLACK);
+
+#    it.fill(BLACK);
+#    it.filled_rectangle(0, 0, 800, 240, WHITE);
+
+#    it.print(320, 110, id(myFont24), RED, "\U000F02D1");
+#    it.print(100, 180, id(myFontXXX), ORANGE, "RPN");
