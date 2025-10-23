@@ -1,5 +1,4 @@
 # https://github.com/Incipiens/Adam-Home-Assistant-Snippets/blob/main/ESPHome/reTerminal%20E1002%20-%20ComfyUI/reTerminal-E1002-ComfyUI.yaml
-
 esphome:
   name: reterminal
   friendly_name: reTerminal E1002
@@ -247,3 +246,4 @@ display:
 # Enable logging
 logger:
   
+
