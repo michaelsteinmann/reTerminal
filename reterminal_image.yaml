@@ -48,7 +48,8 @@ online_image:
   - id: gallery_img
     format: png
     type: RGB
-    url: "http://192.168.86.248:8000/venn.png"
+    transparency: alpha_channel
+    url: "http://192.168.86.248:8000/DM41L_pouch_large.png"
     on_download_finished:
       - component.update: epaper_display
 
@@ -71,7 +72,7 @@ i2s_audio:
 # Deep-sleep, wake by GPIO4
 deep_sleep:
   id: deep_sleep_1
-  run_duration: 2min
+  run_duration: 20min
   sleep_duration: 60min    
   wakeup_pin: 
     number: GPIO4 # Right white button
@@ -208,16 +209,10 @@ script:
     mode: restart
     then:
       # Give MQTT a moment after wake to deliver the retained message (usually instant)
+    # id(gallery_img).set_url("http://192.168.86.248:8000/Venn_diagram_rgb.png");
       - delay: 200ms
       - lambda: |-
-          // Clamp 1..5
-          if (id(current_index) < 1 || id(current_index) > 5) id(current_index) = 1;
-
-          char url[160];
-          snprintf(url, sizeof(url),
-                   "http://192.168.86.248:8000/venn.png",
-                   id(current_index));
-          id(gallery_img).set_url(url);
+          id(gallery_img).set_url("http://192.168.86.248:8000/DM41L_pouch_large.png");
 
       - delay: 200ms
       - component.update: gallery_img
@@ -225,6 +220,53 @@ script:
           condition:
             lambda: 'return id(gallery_img).is_ready();'
           timeout: 60s
+
+# define font to display words
+font:
+  - file: "fonts/Theinhardt-Medium.ttf"
+    id: myFont24
+    size: 145
+
+#    extras:
+#      - file: "fonts/materialdesignicons-webfont.ttf"
+#        glyphs: [
+#          "\U000F02D1", # mdi-heart
+#          "\U000F05D4", # mdi-airplane-landing
+#          ]
+
+  - file: "fonts/Theinhardt-Medium.ttf"
+    id: Theinhardt_Medium_32
+    size: 32
+  - file: "fonts/Theinhardt-Medium.ttf"
+    id: Theinhardt_Medium_48
+    size: 48
+
+
+text:
+  - platform: template
+    name: "Display Title"
+    id: display_title
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+        - component.update: epaper_display
+  - platform: template
+    name: "Display Text 1"
+    id: display_text1
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+        - component.update: epaper_display
+  - platform: template
+    name: "Display Text 2"
+    id: display_text2
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+        - component.update: epaper_display
 
 display:
   - platform: waveshare_epaper
@@ -240,10 +282,16 @@ display:
       inverted: true
     update_interval: never
     lambda: |-
-      // Draw the downloaded PNG full screen (800x480 for E10xx)
-      it.image(0, 0, id(gallery_img));
+
+      const auto RED = Color(255, 0, 0, 0);
+      const auto GREEN = Color(0, 255, 0, 0);
+      const auto BLUE = Color(0, 0, 255, 0);
+      const auto BLACK   = Color(0,   0,   0,   0);
+      it.printf(-5, -30, id(myFont24), RED, "%s", id(display_title).state.c_str());
+      it.image(200, 20, id(gallery_img));
+      it.printf(0, 130, id(Theinhardt_Medium_32), GREEN, "%s", id(display_text1).state.c_str());
+      it.printf(0, 230, id(Theinhardt_Medium_48), BLUE, "%s", id(display_text2).state.c_str());
 
 # Enable logging
 logger:
   
-
