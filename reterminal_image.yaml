@@ -49,7 +49,7 @@ online_image:
     format: png
     type: RGB
     transparency: alpha_channel
-    url: "http://192.168.86.248:8000/DM41L_pouch_large.png"
+    url: "http://192.168.86.248:8000/ok.png"
     on_download_finished:
       - component.update: epaper_display
 
@@ -66,8 +66,6 @@ i2s_audio:
   - id: i2s0
     i2s_bclk_pin: GPIO42     # PDM clock from schematic
     i2s_lrclk_pin: GPIO2 
-
-
 
 # Deep-sleep, wake by GPIO4
 deep_sleep:
@@ -101,6 +99,10 @@ globals:
     type: int
     initial_value: '1'
 
+  - id: current_image_url
+    type: std::string
+    initial_value: ""
+    # initial_value: "\"http://192.168.86.248:8000/boom.png\""
 
 sensor:
   - platform: sht4x
@@ -209,10 +211,14 @@ script:
     mode: restart
     then:
       # Give MQTT a moment after wake to deliver the retained message (usually instant)
-    # id(gallery_img).set_url("http://192.168.86.248:8000/Venn_diagram_rgb.png");
       - delay: 200ms
       - lambda: |-
-          id(gallery_img).set_url("http://192.168.86.248:8000/DM41L_pouch_large.png");
+          // Clamp 1..5
+          if (id(current_index) < 1 || id(current_index) > 5) id(current_index) = 1;
+          char url[160];
+          snprintf(url, sizeof(url), "%s", id(current_image_url).c_str()); 
+          id(gallery_img).set_url(url);
+          ESP_LOGD("display", "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO New URL received: %s", url);
 
       - delay: 200ms
       - component.update: gallery_img
@@ -220,6 +226,7 @@ script:
           condition:
             lambda: 'return id(gallery_img).is_ready();'
           timeout: 60s
+
 
 # define font to display words
 font:
@@ -268,6 +275,30 @@ text:
       then:
         - component.update: epaper_display
 
+  - platform: template
+    name: "Display URL"
+    id: display_url
+    mode: text
+    optimistic: true
+    on_value:
+      then:
+      - delay: 200ms
+      - lambda: |-
+          ESP_LOGD("display", "XXXXXXXXXXXXXXXXXXXX New URL received: %s", id(display_url).state.c_str());
+          id(gallery_img).set_url(id(display_url).state.c_str());
+          ESP_LOGD("display", "New gallery_img calcualted: %s", id(display_url).state.c_str());
+
+      - delay: 500ms
+      - wait_until:
+          condition:
+            lambda: 'return id(gallery_img).is_ready();'
+          timeout: 60s
+      - delay: 500ms
+      - script.execute: cycle_image_now
+#    - component.update: gallery_img
+      # - component.update: epaper_display      
+
+
 display:
   - platform: waveshare_epaper
     id: epaper_display
@@ -285,13 +316,15 @@ display:
 
       const auto RED = Color(255, 0, 0, 0);
       const auto GREEN = Color(0, 255, 0, 0);
+      const auto YELLOW = Color(255, 255, 0, 0);
       const auto BLUE = Color(0, 0, 255, 0);
       const auto BLACK   = Color(0,   0,   0,   0);
       it.printf(-5, -30, id(myFont24), RED, "%s", id(display_title).state.c_str());
-      it.image(200, 20, id(gallery_img));
+      it.image(0, 0, id(gallery_img));
       it.printf(0, 130, id(Theinhardt_Medium_32), GREEN, "%s", id(display_text1).state.c_str());
       it.printf(0, 230, id(Theinhardt_Medium_48), BLUE, "%s", id(display_text2).state.c_str());
 
+# it.printf(0, 80, id(Theinhardt_Medium_32), GREEN, "%s", id(display_url).state.c_str());
 # Enable logging
 logger:
   
