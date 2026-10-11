@@ -11,6 +11,7 @@ Usage:  python tools/build_images.py --font-dir DIR   download, render and pack
 """
 
 import argparse
+import html
 import io
 import re
 import urllib.request
@@ -56,14 +57,48 @@ def fetch(url: str) -> bytes:
         return r.read()
 
 
-def product_photo(slug: str) -> Image.Image:
-    html = fetch(SHOP + slug).decode("utf-8", "replace")
-    m = re.search(r'https://swissmicros-webshop-media[^"\\ ]*?\.(?:md|lg)\.webp', html)
+def product_page(slug: str) -> tuple[Image.Image, str]:
+    """Main product photo and the first paragraph of the product description."""
+    page = fetch(SHOP + slug).decode("utf-8", "replace")
+    m = re.search(r'https://swissmicros-webshop-media[^"\\ ]*?\.(?:md|lg)\.webp', page)
     if not m:
         raise RuntimeError(f"no product image found for {slug}")
     url = re.sub(r"\.md\.webp$", ".lg.webp", m.group(0))
     im = Image.open(io.BytesIO(fetch(url))).convert("RGBA")
-    return im.crop(im.getbbox())  # trim transparent padding
+    d = re.search(r'<div class="prose[^"]*"><p>(.*?)</p>', page, re.S)
+    if not d:
+        raise RuntimeError(f"no product description found for {slug}")
+    # Tags become spaces: some descriptions separate sentences with <br>.
+    text = html.unescape(re.sub(r"<[^>]+>", " ", d.group(1)))
+    text = re.sub(r"\s+", " ", text).strip()
+    return im.crop(im.getbbox()), text  # trim transparent padding
+
+
+def wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, width: int) -> list[str]:
+    lines, line = [], ""
+    for word in text.split():
+        candidate = f"{line} {word}".strip()
+        if line and draw.textlength(candidate, font=font) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    return lines + [line] if line else lines
+
+
+def fit_description(draw, text, font, width, max_lines) -> list[str]:
+    """Wrap text into at most max_lines lines, cutting at the last whole sentence
+    that fits; if not even the first sentence fits, cut it with an ellipsis."""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    for n in range(len(sentences), 0, -1):
+        lines = wrap(draw, " ".join(sentences[:n]), font, width)
+        if len(lines) <= max_lines:
+            return lines
+    lines = wrap(draw, text, font, width)[:max_lines]
+    while draw.textlength(lines[-1] + "…", font=font) > width:
+        lines[-1] = lines[-1].rsplit(" ", 1)[0]
+    lines[-1] += "…"
+    return lines
 
 
 def dither(im: Image.Image) -> Image.Image:
@@ -98,28 +133,14 @@ def dither(im: Image.Image) -> Image.Image:
     return Image.fromarray(np.array(PURE, dtype=np.uint8)[out], "RGB")
 
 
-def render(photo: Image.Image, model: str, subtitle: str, fonts: Path) -> Image.Image:
-    bold = ImageFont.truetype(str(fonts / "Theinhardt-Bold.otf"), 96)
-    medium = ImageFont.truetype(str(fonts / "Theinhardt-Medium.otf"), 30)
-    small = ImageFont.truetype(str(fonts / "Theinhardt-Medium.otf"), 22)
-
+def render(photo: Image.Image, model: str, subtitle: str, description: str, fonts: Path) -> Image.Image:
+    """Calculator on the left, text column (model, subtitle, description) on the right.
+    The bottom-right corner (x >= 684, y >= 446) stays empty for the battery icon."""
     canvas = Image.new("RGB", (W, H), WHITE)
     margin = 16
-    portrait = photo.height > photo.width
-    if portrait:
-        # Calculator on the left at full height, text column on the right.
-        box = (W // 2 - margin, H - 2 * margin)
-        p = photo.copy()
-        p.thumbnail(box, Image.Resampling.LANCZOS)
-        pos = (margin + (box[0] - p.width) // 2, margin + (box[1] - p.height) // 2)
-        text_x, text_y, text_w = W // 2 + 10, 150, W // 2 - 10 - margin
-    else:
-        # Calculator across the top, text below.
-        box = (W - 2 * margin, H - 150)
-        p = photo.copy()
-        p.thumbnail(box, Image.Resampling.LANCZOS)
-        pos = ((W - p.width) // 2, margin)
-        text_x, text_y, text_w = margin + 8, pos[1] + p.height + 6, W - 2 * margin
+    p = photo.copy()
+    p.thumbnail((int(W * 0.6), H - 2 * margin), Image.Resampling.LANCZOS)
+    pos = (margin, (H - p.height) // 2)
     layer = Image.new("RGB", p.size, WHITE)
     layer.paste(p, mask=p.split()[3])
     canvas.paste(dither(layer), pos)
@@ -127,16 +148,33 @@ def render(photo: Image.Image, model: str, subtitle: str, fonts: Path) -> Image.
     # Text is drawn after dithering without anti-aliasing so edges stay crisp.
     d = ImageDraw.Draw(canvas)
     d.fontmode = "1"
-    d.text((text_x, text_y), model, font=bold, fill=BLACK)
-    if portrait:
-        d.rectangle((text_x + 2, text_y + 112, text_x + 82, text_y + 118), fill=RED)
-        d.text((text_x, text_y + 136), subtitle, font=medium, fill=BLACK)
-        d.text((text_x, H - margin - 30), "swissmicros.com", font=small, fill=RED)
-    else:
-        mw = d.textlength(model, font=bold)
-        d.rectangle((text_x + mw + 24, text_y + 46, text_x + mw + 30, text_y + 96), fill=RED)
-        d.text((text_x + mw + 50, text_y + 36), subtitle, font=medium, fill=BLACK)
-        d.text((text_x + mw + 50, text_y + 76), "swissmicros.com", font=small, fill=RED)
+    x = pos[0] + p.width + 32
+    col_w = W - margin - x
+    size = 96
+    while True:
+        title = ImageFont.truetype(str(fonts / "Theinhardt-Bold.otf"), size)
+        if d.textlength(model, font=title) <= col_w:
+            break
+        size -= 4
+    medium = ImageFont.truetype(str(fonts / "Theinhardt-Medium.otf"), 24)
+    body = ImageFont.truetype(str(fonts / "Theinhardt-Regular.otf"), 20)
+    small = ImageFont.truetype(str(fonts / "Theinhardt-Medium.otf"), 20)
+
+    y = 36
+    d.text((x, y), model, font=title, fill=BLACK)
+    y = d.textbbox((x, y), model, font=title)[3] + 14
+    d.rectangle((x + 2, y, x + 72, y + 5), fill=RED)
+    y += 22
+    for line in wrap(d, subtitle, medium, col_w):
+        d.text((x, y), line, font=medium, fill=BLACK)
+        y += 30
+    y += 14
+    line_h = 26
+    bottom = H - margin - 34  # keep clear of the "swissmicros.com" line
+    for line in fit_description(d, description, body, col_w, (bottom - y) // line_h):
+        d.text((x, y), line, font=body, fill=BLACK)
+        y += line_h
+    d.text((x, H - margin - 24), "swissmicros.com", font=small, fill=RED)
     return canvas
 
 
@@ -191,7 +229,8 @@ def main() -> None:
             old.unlink()
         for i, (slug, model, subtitle) in enumerate(CALCULATORS):
             name = f"{i:02d}_{slug}"
-            render(product_photo(slug), model, subtitle, args.font_dir).save(OUT / f"{name}.png")
+            photo, description = product_page(slug)
+            render(photo, model, subtitle, description, args.font_dir).save(OUT / f"{name}.png")
             print(f"rendered {name}")
     pack(sorted(OUT.glob("*.png")))
 
