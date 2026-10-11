@@ -12,7 +12,7 @@ indicator in the bottom-right corner.
   (open for 5 minutes). Starts automatically on power-on until WiFi is set up.
 - The device wakes, refreshes the panel (~20 s) and deep-sleeps until the next
   day or the next button press. The current image is kept in flash.
-- **Firmware updates:** on the daily wake (once WiFi is set up) it connects for
+- **Firmware updates:** on the daily wake and after power-on (once WiFi is set up) it connects for
   a few seconds and installs the latest GitHub release if its version differs.
   Builds without a version (`dev`) never auto-update.
 - Days are counted from power-on with the ESP32's internal RTC, so the change

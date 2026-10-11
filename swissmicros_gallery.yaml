@@ -6,8 +6,9 @@
 #   captive portal for 5 minutes. Also starts by itself on power-on while no
 #   WiFi credentials are stored.
 # - The device wakes, refreshes the panel (~20 s) and deep-sleeps until the next
-#   day or button press. On the daily wake, once WiFi is set up, it briefly
-#   connects and installs a newer firmware from the latest GitHub release.
+#   day or button press. On the daily wake (and after power-on), once WiFi is
+#   set up, it briefly connects and installs the latest GitHub release if its
+#   version differs.
 #
 # Images: tools/build_images.py renders images/*.png and packs them into
 # gallery_images.h (run with --pack-only before building).
@@ -60,8 +61,9 @@ esphome:
             - if:
                 condition:
                   lambda: |-
-                    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && id(wifi_configured) &&
-                           std::string("${version}") != "dev";
+                    // Daily wake, or power-on/reset (e.g. new battery); never on button wakes.
+                    return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || gallery_power_on()) &&
+                           id(wifi_configured) && std::string("${version}") != "dev";
                 then:
                   - script.execute: daily_update_check
                   - script.wait: daily_update_check
@@ -108,6 +110,10 @@ captive_portal:
 http_request:
   timeout: 15s
   watchdog_timeout: 30s
+  # GitHub redirects release downloads to a signed URL of ~900 characters; it
+  # must fit in the response header buffer and in the follow-up request line.
+  buffer_size_rx: 4096
+  buffer_size_tx: 2048
 
 ota:
   - platform: http_request
