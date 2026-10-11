@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 SHOP = "https://www.swissmicros.com/en/products/"
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,7 +47,7 @@ CALCULATORS = [
 PURE = [(0, 0, 0), (255, 255, 255), (255, 255, 0), (255, 0, 0), (0, 0, 255), (0, 255, 0)]
 PERCEIVED = [(25, 30, 33), (232, 232, 232), (239, 222, 68), (178, 19, 24), (33, 87, 186), (18, 95, 32)]
 BLACK, WHITE, RED = PURE[0], PURE[1], PURE[3]
-SHADOW_GAMMA = 0.7
+LEVEL_BLACK, LEVEL_WHITE = 30, 225  # stretched to 0..255 before dithering
 NEUTRAL_SATURATION = 90  # max(R,G,B)-min(R,G,B) below this is treated as grey
 
 
@@ -101,35 +101,37 @@ def fit_description(draw, text, font, width, max_lines) -> list[str]:
     return lines
 
 
+# Atkinson error diffusion: spreads only 6/8 of the error, so near-black bodies and
+# near-white LCDs stay solid and small key legends stay crisp (Floyd-Steinberg
+# turned them into speckle). (dx, dy, weight) relative to the current pixel.
+ATKINSON = [(1, 0, 1 / 8), (2, 0, 1 / 8), (-1, 1, 1 / 8), (0, 1, 1 / 8), (1, 1, 1 / 8), (0, 2, 1 / 8)]
+
+
 def dither(im: Image.Image) -> Image.Image:
-    """Floyd-Steinberg against the perceived palette. Near-neutral source pixels
-    (the calculator bodies and keys) may only use black/white, otherwise dark
-    greys turn into red/green noise; coloured pixels get the full palette."""
-    im = ImageEnhance.Contrast(im).enhance(1.15)
-    # Lift the shadows so dark keys stay distinguishable from the black body.
-    src = 255 * (np.asarray(im, dtype=np.float32) / 255) ** SHADOW_GAMMA
+    """Sharpen, stretch levels, then Atkinson-dither (serpentine) against the
+    perceived palette. Near-neutral pixels (calculator bodies, keys, LCDs) may
+    only use black/white, otherwise greys turn into red/green noise."""
+    im = im.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=2))
+    src = np.asarray(im, dtype=np.float32)
+    src = 255 * np.clip((src - LEVEL_BLACK) / (LEVEL_WHITE - LEVEL_BLACK), 0, 1)
     sat = src.max(axis=2) - src.min(axis=2)
     neutral = (sat < NEUTRAL_SATURATION) | (src.max(axis=2) < 100)  # greys and near-blacks
     buf = src.copy()
     perceived = np.array(PERCEIVED, dtype=np.float32)
-    out = np.zeros(src.shape[:2], dtype=np.uint8)
-    h, w = out.shape
+    h, w = neutral.shape
+    out = np.zeros((h, w), dtype=np.uint8)
     for y in range(h):
-        row, nxt = buf[y], buf[y + 1] if y + 1 < h else None
-        for x in range(w):
-            px = row[x]
+        rev = y % 2 == 1  # serpentine: alternate direction, avoids diagonal streaks
+        for x in range(w - 1, -1, -1) if rev else range(w):
+            px = buf[y, x]
             cand = perceived[:2] if neutral[y, x] else perceived
             idx = int(((cand - px) ** 2).sum(axis=1).argmin())
             out[y, x] = idx
             err = px - perceived[idx]
-            if x + 1 < w:
-                row[x + 1] += err * 7 / 16
-            if nxt is not None:
-                if x > 0:
-                    nxt[x - 1] += err * 3 / 16
-                nxt[x] += err * 5 / 16
-                if x + 1 < w:
-                    nxt[x + 1] += err * 1 / 16
+            for dx, dy, f in ATKINSON:
+                xx, yy = x - dx if rev else x + dx, y + dy
+                if 0 <= xx < w and yy < h:
+                    buf[yy, xx] += err * f
     return Image.fromarray(np.array(PURE, dtype=np.uint8)[out], "RGB")
 
 
