@@ -118,6 +118,17 @@ http_request:
 ota:
   - platform: http_request
     id: ota_github
+    # Called about once per second during the download: blink the LED.
+    on_progress:
+      - lambda: |-
+          static bool led_on = false;
+          led_on = !led_on;
+          id(status_led).set_state(led_on);
+          ESP_LOGI("gallery", "update %.0f%%", x);
+    on_end:
+      - output.turn_off: status_led
+    on_error:
+      - output.turn_off: status_led
 
 update:
   - platform: http_request
@@ -158,6 +169,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: "false"
+  - id: updating
+    type: bool
+    restore_value: false
+    initial_value: "false"
 
 binary_sensor:
   - platform: gpio
@@ -183,6 +198,10 @@ output:
   - platform: gpio
     pin: GPIO21
     id: battery_enable
+  - platform: gpio
+    pin: GPIO6
+    id: status_led
+    inverted: true
 
 sensor:
   - platform: adc
@@ -281,12 +300,20 @@ script:
                   update.is_available:
                     id: fw_update
                 then:
+                  # The panel can't refresh during the download (it blocks the main
+                  # loop), so show the update screen first; the LED blinks meanwhile.
+                  - lambda: 'id(updating) = true;'
+                  - script.execute: render
+                  - script.wait: render
                   - update.perform: fw_update
-                  # Reboots on success; on failure we just carry on and sleep.
+                  # Reboots on success; on failure go back to the gallery and sleep.
                   - wait_until:
                       condition:
                         lambda: 'return id(fw_update).state != update::UPDATE_STATE_INSTALLING;'
                       timeout: 5min
+                  - lambda: 'id(updating) = false;'
+                  - script.execute: render
+                  - script.wait: render
 
 font:
   - file: "gfonts://Roboto@700"
@@ -316,7 +343,16 @@ display:
     lambda: |-
       const auto black = Color(0, 0, 0), white = Color(255, 255, 255), red = Color(255, 0, 0);
 
-      if (id(setup_mode)) {
+      if (id(updating)) {
+        it.fill(white);
+        it.filled_rectangle(0, 0, 800, 12, red);
+        it.print(40, 50, id(font_title), black, "Updating firmware");
+        it.printf(40, 130, id(font_title), red, "${version}  to  %s", id(fw_update).update_info.latest_version.c_str());
+        it.print(40, 220, id(font_text), black, "Downloading the new firmware from GitHub (about 1 minute).");
+        it.print(40, 258, id(font_text), black, "The LED blinks while it downloads.");
+        it.print(40, 320, id(font_text), black, "Then the device restarts and shows the gallery again.");
+        it.print(40, 358, id(font_text), black, "Please don't press the reset button meanwhile.");
+      } else if (id(setup_mode)) {
         it.fill(white);
         it.filled_rectangle(0, 0, 800, 12, red);
         it.print(40, 50, id(font_title), black, "WiFi setup");

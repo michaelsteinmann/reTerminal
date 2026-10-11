@@ -14,7 +14,8 @@ indicator in the bottom-right corner.
   day or the next button press. The current image is kept in flash.
 - **Firmware updates:** on the daily wake and after power-on (once WiFi is set up) it connects for
   a few seconds and installs the latest GitHub release if its version differs.
-  Builds without a version (`dev`) never auto-update.
+  Builds without a version (`dev`) never auto-update. While updating, the
+  screen shows "Updating firmware" and the LED blinks during the download.
 - Days are counted from power-on with the ESP32's internal RTC, so the change
   happens roughly every 24 h. It is not aligned to midnight.
 
