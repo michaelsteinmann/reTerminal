@@ -19,16 +19,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: Install ESPHome
         run: pip install esphome==2026.9.1 pillow numpy
 
-      - name: Cache PlatformIO / ESP-IDF toolchain
+      - name: Cache ESP-IDF toolchain
         uses: actions/cache@v4
         with:
-          path: ~/.platformio
-          key: platformio-${{ runner.os }}-esphome-2026.9.1
+          path: ~/.espressif
+          key: espressif-${{ runner.os }}-esphome-2026.9.1
 
       - name: Pack images
         run: python tools/build_images.py --pack-only
