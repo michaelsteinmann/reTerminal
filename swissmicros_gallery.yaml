@@ -17,6 +17,9 @@
 
 substitutions:
   version: dev  # "dev" builds never auto-update
+  # Below this charge no panel refresh is started (0 = off). Independently, a
+  # refresh that crashed blocks refreshes until the battery is charged again.
+  min_battery_percent: "0"
   manifest_url: https://github.com/michaelsteinmann/reTerminal/releases/latest/download/manifest.json
 
 esphome:
@@ -39,6 +42,19 @@ esphome:
                    (int) esp_sleep_get_wakeup_cause(), step, id(img_index), id(setup_mode));
       - script.execute: read_battery
       - script.wait: read_battery
+      - lambda: 'gallery_battery_check_crash();'
+      # Battery too low for a refresh: don't start one (it would crash halfway and
+      # leave a half-drawn image), just sleep until the next day or button press.
+      - if:
+          condition:
+            lambda: 'return !gallery_battery_can_refresh(id(battery_voltage).state, ${min_battery_percent});'
+          then:
+            - lambda: |-
+                ESP_LOGW("gallery", "battery too low for a refresh (%.2f V, last crash at %.2f V), sleeping",
+                         id(battery_voltage).state, gallery_battery_crash_v());
+            - deep_sleep.enter:
+                id: deep_sleep_1
+                sleep_duration: !lambda 'return gallery_ms_until_next_change();'
       - if:
           condition:
             lambda: 'return id(setup_mode);'
@@ -224,6 +240,7 @@ script:
 
   - id: render
     then:
+      - lambda: 'gallery_refresh_begin(id(battery_voltage).state);'
       - component.update: epaper_display
       # The display runs a state machine in its loop and disables the loop when done.
       - wait_until:
@@ -234,6 +251,8 @@ script:
           condition:
             lambda: 'return id(epaper_display).is_idle();'
           timeout: 90s
+      # Completed: the crash banner (gallery screen only) has been shown, clear it.
+      - lambda: 'gallery_refresh_end(!id(setup_mode) && !id(updating));'
 
   # Show instructions, run the captive portal until WiFi connects (max 5 min),
   # then check for an update and go back to the gallery.
@@ -374,6 +393,13 @@ display:
             it.draw_pixel_at(x, y, palette[*px >> 4]);
             it.draw_pixel_at(x + 1, y, palette[*px & 0x0F]);
           }
+        }
+        // The previous refresh crashed on an empty battery: say at which charge.
+        const float crash_v = gallery_battery_crash_v();
+        if (crash_v > 0) {
+          it.filled_rectangle(0, 0, 800, 36, red);
+          it.printf(400, 18, id(font_text), white, TextAlign::CENTER,
+                    "Battery ran empty during a refresh at %.2f V (%d%%)", crash_v, gallery_battery_percent(crash_v));
         }
       }
 
