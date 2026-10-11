@@ -12,6 +12,7 @@
 static constexpr int64_t GALLERY_DAY_S = 24 * 60 * 60;
 static constexpr int GALLERY_KEY_PREV = 5;  // left white button
 static constexpr int GALLERY_KEY_NEXT = 4;  // right white button
+static constexpr int GALLERY_KEY_SETUP = 3;  // green button
 
 RTC_DATA_ATTR static int64_t gallery_next_change_s = 0;
 
@@ -56,6 +57,14 @@ inline int gallery_battery_percent(float v) {
   }
   return 0;
 }
+
+inline bool gallery_setup_requested() {
+  return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
+         (esp_sleep_get_ext1_wakeup_status() & (1ULL << GALLERY_KEY_SETUP));
+}
+
+// Power-on, reset or flashing (as opposed to waking from deep sleep).
+inline bool gallery_power_on() { return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED; }
 
 inline uint32_t gallery_ms_until_next_change() {
   const int64_t left = gallery_next_change_s - time(nullptr);

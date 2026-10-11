@@ -1,0 +1,62 @@
+# Push a tag like v1.2.0 to build the gallery firmware and publish it as a
+# GitHub release. Devices fetch releases/latest/download/manifest.json once a
+# day and install the firmware when the version differs from their own.
+name: Release firmware
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ESPHome
+        run: pip install esphome==2026.9.1 pillow numpy
+
+      - name: Cache PlatformIO / ESP-IDF toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-esphome-2026.9.1
+
+      - name: Pack images
+        run: python tools/build_images.py --pack-only
+
+      - name: Build firmware
+        run: esphome -s version "${GITHUB_REF_NAME#v}" compile swissmicros_gallery.yaml
+
+      - name: Write manifest
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD=$(dirname "$(find .esphome/build/reterminal-gallery -name firmware.ota.bin | head -1)")
+          mkdir dist
+          cp "$BUILD/firmware.ota.bin" "$BUILD/firmware.factory.bin" dist/
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          jq -n --arg v "$VERSION" --arg md5 "$(md5sum dist/firmware.ota.bin | cut -d' ' -f1)" \
+                --arg base "$BASE" --arg rel "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" '{
+            name: "SwissMicros Gallery",
+            version: $v,
+            builds: [{
+              chipFamily: "ESP32-S3",
+              parts: [{path: ($base + "/firmware.factory.bin"), offset: 0}],
+              ota: {path: ($base + "/firmware.ota.bin"), md5: $md5, release_url: $rel, summary: ("SwissMicros Gallery " + $v)}
+            }]
+          }' > dist/manifest.json
+          cat dist/manifest.json
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
