@@ -2,9 +2,12 @@
 #
 # - Shows one calculator from the SwissMicros webshop, advancing once a day.
 # - Left white button: previous image. Right white button: next image.
-# - Green button: WiFi setup. Opens the "SwissMicros Gallery" access point with a
-#   captive portal for 5 minutes. Also starts by itself on power-on while no
-#   WiFi credentials are stored.
+# - Green button: switch between the gallery and the weather forecast for
+#   Sagogn (top) and Stäfa (bottom). The forecast is fetched at about 05:00
+#   every day and on every button press while it is shown.
+# - Green button held for 3 s: WiFi setup. Opens the "SwissMicros Gallery"
+#   access point with a captive portal for 5 minutes. Also starts by itself on
+#   power-on while no WiFi credentials are stored.
 # - The device wakes, refreshes the panel (~20 s) and deep-sleeps until the next
 #   day or button press. On the daily wake (and after power-on), once WiFi is
 #   set up, it briefly connects and installs the latest GitHub release if its
@@ -31,15 +34,33 @@ esphome:
   includes:
     - gallery_images.h
     - gallery.h
+    - weather.h
   on_boot:
     priority: -100
     then:
       - lambda: |-
           const int step = gallery_step_for_wakeup();
-          id(img_index) = ((id(img_index) + step) % GALLERY_COUNT + GALLERY_COUNT) % GALLERY_COUNT;
-          id(setup_mode) = gallery_setup_requested() || (gallery_power_on() && !id(wifi_configured));
-          ESP_LOGI("gallery", "v${version} wake cause %d, step %d -> image %d, setup %d",
-                   (int) esp_sleep_get_wakeup_cause(), step, id(img_index), id(setup_mode));
+          // The gallery keeps advancing daily in weather mode, but the white buttons don't page it.
+          if (!id(weather_mode) || esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1)
+            id(img_index) = ((id(img_index) + step) % GALLERY_COUNT + GALLERY_COUNT) % GALLERY_COUNT;
+          id(setup_mode) = gallery_power_on() && !id(wifi_configured);
+          ESP_LOGI("gallery", "v${version} wake cause %d, step %d -> image %d, weather %d",
+                   (int) esp_sleep_get_wakeup_cause(), step, id(img_index), id(weather_mode));
+      # Green button: a short press switches gallery <-> weather, holding it starts WiFi setup.
+      - if:
+          condition:
+            lambda: 'return gallery_setup_requested();'
+          then:
+            - wait_until:
+                condition:
+                  binary_sensor.is_off: key_setup
+                timeout: 2s
+            - lambda: |-
+                if (id(key_setup).state)
+                  id(setup_mode) = true;
+                else
+                  id(weather_mode) = !id(weather_mode);
+                ESP_LOGI("gallery", "green button: setup %d, weather %d", id(setup_mode), id(weather_mode));
       - script.execute: read_battery
       - script.wait: read_battery
       - lambda: 'gallery_battery_check_crash();'
@@ -62,30 +83,37 @@ esphome:
             - script.execute: wifi_setup
             - script.wait: wifi_setup
           else:
-            - script.execute: render
-            - script.wait: render
-            # Buttons pressed while the panel was refreshing.
-            - while:
-                condition:
-                  lambda: 'return id(pending_steps) != 0;'
-                then:
-                  - lambda: |-
-                      id(img_index) = ((id(img_index) + id(pending_steps)) % GALLERY_COUNT + GALLERY_COUNT) % GALLERY_COUNT;
-                      id(pending_steps) = 0;
-                  - script.execute: render
-                  - script.wait: render
             - if:
                 condition:
-                  lambda: |-
-                    // Daily wake, or power-on/reset (e.g. new battery); never on button wakes.
-                    return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || gallery_power_on()) &&
-                           id(wifi_configured) && std::string("${version}") != "dev";
+                  lambda: 'return id(weather_mode);'
                 then:
-                  - script.execute: daily_update_check
-                  - script.wait: daily_update_check
+                  - script.execute: weather_show
+                  - script.wait: weather_show
+                else:
+                  - script.execute: render
+                  - script.wait: render
+                  # Buttons pressed while the panel was refreshing.
+                  - while:
+                      condition:
+                        lambda: 'return id(pending_steps) != 0;'
+                      then:
+                        - lambda: |-
+                            id(img_index) = ((id(img_index) + id(pending_steps)) % GALLERY_COUNT + GALLERY_COUNT) % GALLERY_COUNT;
+                            id(pending_steps) = 0;
+                        - script.execute: render
+                        - script.wait: render
+                  - if:
+                      condition:
+                        lambda: |-
+                          // Daily wake, or power-on/reset (e.g. new battery); never on button wakes.
+                          return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || gallery_power_on()) &&
+                                 id(wifi_configured) && std::string("${version}") != "dev";
+                      then:
+                        - script.execute: daily_update_check
+                        - script.wait: daily_update_check
       - deep_sleep.enter:
           id: deep_sleep_1
-          sleep_duration: !lambda 'return gallery_ms_until_next_change();'
+          sleep_duration: !lambda 'return id(weather_mode) ? weather_ms_until_next_fetch() : gallery_ms_until_next_change();'
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -161,7 +189,8 @@ deep_sleep:
   sleep_duration: 1h
   esp32_ext1_wakeup:
     pins:
-      - number: GPIO3  # green button: WiFi setup
+      - number: GPIO3  # green button: weather / WiFi setup
+        allow_other_uses: true
       - number: GPIO4  # right white button
         allow_other_uses: true
       - number: GPIO5  # left white button
@@ -174,6 +203,10 @@ globals:
     restore_value: true
     initial_value: "0"
   - id: wifi_configured
+    type: bool
+    restore_value: true
+    initial_value: "false"
+  - id: weather_mode
     type: bool
     restore_value: true
     initial_value: "false"
@@ -191,6 +224,13 @@ globals:
     initial_value: "false"
 
 binary_sensor:
+  - platform: gpio
+    id: key_setup
+    pin:
+      number: GPIO3
+      mode: INPUT_PULLUP
+      inverted: true
+      allow_other_uses: true
   - platform: gpio
     id: key_next
     pin:
@@ -252,7 +292,7 @@ script:
             lambda: 'return id(epaper_display).is_idle();'
           timeout: 90s
       # Completed: the crash banner (gallery screen only) has been shown, clear it.
-      - lambda: 'gallery_refresh_end(!id(setup_mode) && !id(updating));'
+      - lambda: 'gallery_refresh_end(!id(setup_mode) && !id(updating) && !id(weather_mode));'
 
   # Show instructions, run the captive portal until WiFi connects (max 5 min),
   # then check for an update and go back to the gallery.
@@ -270,6 +310,12 @@ script:
             wifi.connected:
           then:
             - lambda: 'ESP_LOGI("gallery", "WiFi connected");'
+            - if:
+                condition:
+                  lambda: 'return id(weather_mode);'
+                then:
+                  - script.execute: weather_fetch
+                  - script.wait: weather_fetch
             - script.execute: check_and_install
             - script.wait: check_and_install
           else:
@@ -278,6 +324,59 @@ script:
       - script.wait: render
       - script.execute: render
       - script.wait: render
+
+  # Weather mode: fetch the forecast (and on the daily wake check for an
+  # update meanwhile), then show it. Without WiFi it shows the last forecast.
+  - id: weather_show
+    then:
+      - if:
+          condition:
+            lambda: 'return id(wifi_configured);'
+          then:
+            - wifi.enable:
+            - wait_until:
+                condition:
+                  wifi.connected:
+                timeout: 20s
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - script.execute: weather_fetch
+            - script.wait: weather_fetch
+            - if:
+                condition:
+                  lambda: |-
+                    return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || gallery_power_on()) &&
+                           std::string("${version}") != "dev";
+                then:
+                  - script.execute: check_and_install
+                  - script.wait: check_and_install
+          else:
+            - lambda: |-
+                ESP_LOGW("weather", "WiFi not reachable");
+                weather_fetch_failed();
+      - wifi.disable:
+      - script.execute: render
+      - script.wait: render
+
+  # Needs WiFi.
+  - id: weather_fetch
+    then:
+      - http_request.get:
+          url: !lambda 'return std::string(WEATHER_URL);'
+          capture_response: true
+          max_response_buffer_size: 8kB
+          on_response:
+            - lambda: |-
+                if (response->status_code != 200 || !weather_parse(body)) {
+                  ESP_LOGW("weather", "fetch failed: HTTP %d", response->status_code);
+                  weather_fetch_failed();
+                }
+          on_error:
+            - lambda: |-
+                ESP_LOGW("weather", "fetch failed");
+                weather_fetch_failed();
 
   - id: daily_update_check
     then:
@@ -349,6 +448,24 @@ font:
     size: 26
     glyphsets: [GF_Latin_Core]
     ignore_missing_glyphs: true
+  - file: "gfonts://Roboto@700"
+    id: font_temp
+    size: 30
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  - file: "gfonts://Roboto@400"
+    id: font_note
+    size: 20
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  # Weather icons, see weather_icon() in weather.h.
+  - file: https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf
+    id: font_icon
+    size: 60
+    glyphs: [
+      "\U000F0599", "\U000F0595", "\U000F0590", "\U000F0591", "\U000F0597", "\U000F0596",
+      "\U000F067F", "\U000F0598", "\U000F0F36", "\U000F067E",
+    ]
 
 spi:
   clk_pin: GPIO7
@@ -380,8 +497,55 @@ display:
         it.print(40, 240, id(font_text), black, "2. A setup page opens (or browse to http://192.168.4.1).");
         it.print(40, 285, id(font_text), black, "3. Choose your WiFi network and enter its password.");
         it.print(40, 350, id(font_text), black, "The device then checks GitHub for firmware updates once a day.");
-        it.print(40, 388, id(font_text), black, "Setup closes after 5 minutes. Green button: start again.");
+        it.print(40, 388, id(font_text), black, "Closes after 5 minutes. Hold the green button to restart.");
         it.printf(40, 440, id(font_text), black, "Firmware ${version}");
+      } else if (id(weather_mode)) {
+        const auto blue = Color(0, 0, 255), yellow = Color(255, 255, 0);
+        const Color icon_colors[] = {black, yellow, blue, red};
+        static const char *const weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+        const WeatherData &w = weather_data;
+        it.fill(white);
+        if (!w.valid) {
+          it.filled_rectangle(0, 0, 800, 12, blue);
+          it.print(40, 50, id(font_title), black, "Weather");
+          it.print(40, 130, id(font_text), black, id(wifi_configured) ? "Couldn't load the forecast. Trying again in 3 hours."
+                                                                      : "Set up WiFi first: hold the green button for 3 seconds.");
+          it.print(40, 168, id(font_text), black, "Green button: back to the gallery.");
+        } else {
+          for (int p = 0; p < WEATHER_PLACES; p++) {
+            const WeatherPlace &place = w.places[p];
+            const int y0 = p * 228;
+            it.filled_rectangle(0, y0, 800, 40, blue);
+            it.print(16, y0 + 20, id(font_temp), white, TextAlign::CENTER_LEFT, WEATHER_NAMES[p]);
+            if (!std::isnan(place.t_now))
+              it.printf(784, y0 + 20, id(font_text), white, TextAlign::CENTER_RIGHT, "now %.0f°", place.t_now);
+            for (int i = 0; i < WEATHER_DAYS; i++) {
+              const WeatherDay &d = place.days[i];
+              const int cx = 80 + 160 * i;
+              if (i == 0)
+                it.print(cx, y0 + 62, id(font_text), black, TextAlign::CENTER, "Today");
+              else
+                it.printf(cx, y0 + 62, id(font_text), black, TextAlign::CENTER, "%s %d", weekdays[d.weekday], d.day);
+              it.print(cx, y0 + 110, id(font_icon), icon_colors[weather_icon_color(d.code)], TextAlign::CENTER,
+                       weather_icon(d.code));
+              it.print(cx, y0 + 160, id(font_temp), black, TextAlign::CENTER, "/");
+              it.printf(cx - 10, y0 + 160, id(font_temp), red, TextAlign::CENTER_RIGHT, "%.0f°", d.t_max);
+              it.printf(cx + 10, y0 + 160, id(font_temp), blue, TextAlign::CENTER_LEFT, "%.0f°", d.t_min);
+              const bool wet = d.precip_mm >= 0.1f;
+              if (d.precip_prob >= 0)
+                it.printf(cx, y0 + 194, id(font_note), wet ? blue : black, TextAlign::CENTER, "%.1f mm  %d%%",
+                          d.precip_mm, d.precip_prob);
+              else
+                it.printf(cx, y0 + 194, id(font_note), wet ? blue : black, TextAlign::CENTER, "%.1f mm", d.precip_mm);
+            }
+          }
+          if (w.stale)
+            it.printf(16, 464, id(font_note), red, TextAlign::CENTER_LEFT,
+                      "Offline: forecast from %s, retrying every 3 hours", w.updated);
+          else
+            it.printf(16, 464, id(font_note), black, TextAlign::CENTER_LEFT, "Updated %s, next update at %02d:00", w.updated,
+                      WEATHER_REFRESH_HOUR);
+        }
       } else {
         // Two pixels per byte, high nibble first; values index GALLERY_PALETTE.
         Color palette[6];

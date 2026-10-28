@@ -7,7 +7,12 @@ It shows one calculator from the SwissMicros webshop per day, with a battery
 indicator in the bottom-right corner.
 
 - **Left white button:** previous image. **Right white button:** next image.
-- **Green button:** WiFi setup. The screen shows instructions; join the
+- **Green button:** switch between the gallery and the weather forecast. The
+  forecast shows the next 5 days for Sagogn (top) and Stäfa (bottom) from
+  [Open-Meteo](https://open-meteo.com). It is fetched daily at about 05:00 and
+  whenever a button is pressed. Without WiFi it shows the last forecast, marked
+  as offline, and retries every 3 hours.
+- **Green button held for 3 s:** WiFi setup. The screen shows instructions; join the
   `SwissMicros Gallery` network and pick your WiFi in the captive portal
   (open for 5 minutes). Starts automatically on power-on until WiFi is set up.
 - The device wakes, refreshes the panel (~20 s) and deep-sleeps until the next
