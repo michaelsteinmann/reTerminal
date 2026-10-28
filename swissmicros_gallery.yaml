@@ -5,7 +5,7 @@
 # - Green button: switch between the gallery and a 10-day weather forecast for
 #   Sagogn (top) and Stäfa (bottom), in German. The forecast is fetched at about
 #   05:00 every day and when switching to it; there the white buttons show
-#   days 1-5 / 6-10. A red banner suggests a trip to Sagogn when it is much
+#   days 1-5 / 6-10. An orange banner suggests a trip to Sagogn when it is much
 #   nicer there for 3+ days in a row (weather.h).
 # - Green button held for 3 s: WiFi setup. Opens the "SwissMicros Gallery"
 #   access point with a captive portal for 5 minutes. Also starts by itself on
@@ -578,8 +578,12 @@ display:
             }
             const WeatherDay &a = w.places[WEATHER_AWAY].days[tip_first];
             const WeatherDay &b = w.places[WEATHER_AWAY].days[tip_first + tip_len - 1];
-            it.filled_rectangle(0, 214, 800, 32, red);
-            it.printf(400, 230, id(font_tip), white, TextAlign::CENTER,
+            // Orange: the panel has no orange, so a red/yellow checkerboard.
+            it.filled_rectangle(0, 214, 800, 32, Color(255, 255, 0));
+            for (int y = 214; y < 246; y++)
+              for (int x = y % 2; x < 800; x += 2)
+                it.draw_pixel_at(x, y, red);
+            it.printf(400, 230, id(font_tip), black, TextAlign::CENTER,
                       "Ab nach %s! %s %d.%d. – %s %d.%d.: %d statt %d Std. Sonne, %d° statt %d°",
                       WEATHER_NAMES[WEATHER_AWAY], weekdays[a.weekday], a.day, a.month, weekdays[b.weekday], b.day,
                       b.month, int(std::lround(away_h / tip_len)), int(std::lround(home_h / tip_len)),

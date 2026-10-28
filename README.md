@@ -14,7 +14,7 @@ indicator in the bottom-right corner.
   05:00 and when switching to it. Without WiFi it shows the last forecast,
   marked as offline, and retries every 3 hours. Icons follow the day's share
   of sunshine. When Sagogn is much sunnier than Stäfa for at least 3 days in a
-  row, a red banner in the middle suggests the trip (rules in `weather.h`).
+  row, an orange banner in the middle suggests the trip (rules in `weather.h`).
   All screen texts are in German.
 - **Green button held for 3 s:** WiFi setup. The screen shows instructions; join the
   `SwissMicros Gallery` network and pick your WiFi in the captive portal
