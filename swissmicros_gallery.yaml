@@ -2,9 +2,11 @@
 #
 # - Shows one calculator from the SwissMicros webshop, advancing once a day.
 # - Left white button: previous image. Right white button: next image.
-# - Green button: switch between the gallery and the weather forecast for
-#   Sagogn (top) and Stäfa (bottom). The forecast is fetched at about 05:00
-#   every day and on every button press while it is shown.
+# - Green button: switch between the gallery and a 10-day weather forecast for
+#   Sagogn (top) and Stäfa (bottom), in German. The forecast is fetched at about
+#   05:00 every day and when switching to it; there the white buttons show
+#   days 1-5 / 6-10. A red banner suggests a trip to Sagogn when it is much
+#   nicer there for 3+ days in a row (weather.h).
 # - Green button held for 3 s: WiFi setup. Opens the "SwissMicros Gallery"
 #   access point with a captive portal for 5 minutes. Also starts by itself on
 #   power-on while no WiFi credentials are stored.
@@ -40,9 +42,14 @@ esphome:
     then:
       - lambda: |-
           const int step = gallery_step_for_wakeup();
-          // The gallery keeps advancing daily in weather mode, but the white buttons don't page it.
+          // The gallery keeps advancing daily in weather mode; there the white buttons turn
+          // the forecast pages instead. Any other wake starts again on the first page.
           if (!id(weather_mode) || esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1)
             id(img_index) = ((id(img_index) + step) % GALLERY_COUNT + GALLERY_COUNT) % GALLERY_COUNT;
+          if (!weather_page_wake())
+            weather_page = 0;
+          else if (id(weather_mode))
+            weather_turn_page(step);
           id(setup_mode) = gallery_power_on() && !id(wifi_configured);
           ESP_LOGI("gallery", "v${version} wake cause %d, step %d -> image %d, weather %d",
                    (int) esp_sleep_get_wakeup_cause(), step, id(img_index), id(weather_mode));
@@ -329,36 +336,55 @@ script:
   # update meanwhile), then show it. Without WiFi it shows the last forecast.
   - id: weather_show
     then:
+      # A white button only turns the page; anything else fetches a new forecast.
       - if:
           condition:
-            lambda: 'return id(wifi_configured);'
+            lambda: 'return !(weather_page_wake() && weather_data.valid);'
           then:
-            - wifi.enable:
-            - wait_until:
+            - if:
+                condition:
+                  lambda: 'return id(wifi_configured);'
+                then:
+                  - wifi.enable:
+                  - wait_until:
+                      condition:
+                        wifi.connected:
+                      timeout: 20s
+            - if:
                 condition:
                   wifi.connected:
-                timeout: 20s
-      - if:
+                then:
+                  - script.execute: weather_fetch
+                  - script.wait: weather_fetch
+                  - if:
+                      condition:
+                        lambda: |-
+                          return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || gallery_power_on()) &&
+                                 std::string("${version}") != "dev";
+                      then:
+                        - script.execute: check_and_install
+                        - script.wait: check_and_install
+                else:
+                  - lambda: |-
+                      ESP_LOGW("weather", "WiFi not reachable");
+                      weather_fetch_failed();
+            - wifi.disable:
+      - script.execute: render
+      - script.wait: render
+      # Buttons pressed while the panel was refreshing.
+      - while:
           condition:
-            wifi.connected:
+            lambda: 'return id(pending_steps) != 0;'
           then:
-            - script.execute: weather_fetch
-            - script.wait: weather_fetch
             - if:
                 condition:
                   lambda: |-
-                    return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || gallery_power_on()) &&
-                           std::string("${version}") != "dev";
+                    const int steps = id(pending_steps);
+                    id(pending_steps) = 0;
+                    return weather_turn_page(steps);
                 then:
-                  - script.execute: check_and_install
-                  - script.wait: check_and_install
-          else:
-            - lambda: |-
-                ESP_LOGW("weather", "WiFi not reachable");
-                weather_fetch_failed();
-      - wifi.disable:
-      - script.execute: render
-      - script.wait: render
+                  - script.execute: render
+                  - script.wait: render
 
   # Needs WiFi.
   - id: weather_fetch
@@ -453,19 +479,16 @@ font:
     size: 30
     glyphsets: [GF_Latin_Core]
     ignore_missing_glyphs: true
+  - file: "gfonts://Roboto@700"
+    id: font_tip
+    size: 22
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
   - file: "gfonts://Roboto@400"
     id: font_note
     size: 20
     glyphsets: [GF_Latin_Core]
     ignore_missing_glyphs: true
-  # Weather icons, see weather_icon() in weather.h.
-  - file: https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf
-    id: font_icon
-    size: 60
-    glyphs: [
-      "\U000F0599", "\U000F0595", "\U000F0590", "\U000F0591", "\U000F0597", "\U000F0596",
-      "\U000F067F", "\U000F0598", "\U000F0F36", "\U000F067E",
-    ]
 
 spi:
   clk_pin: GPIO7
@@ -482,69 +505,97 @@ display:
       if (id(updating)) {
         it.fill(white);
         it.filled_rectangle(0, 0, 800, 12, red);
-        it.print(40, 50, id(font_title), black, "Updating firmware");
-        it.printf(40, 130, id(font_title), red, "${version}  to  %s", id(fw_update).update_info.latest_version.c_str());
-        it.print(40, 220, id(font_text), black, "Downloading the new firmware from GitHub (about 1 minute).");
-        it.print(40, 258, id(font_text), black, "The LED blinks while it downloads.");
-        it.print(40, 320, id(font_text), black, "Then the device restarts and shows the gallery again.");
-        it.print(40, 358, id(font_text), black, "Please don't press the reset button meanwhile.");
+        it.print(40, 50, id(font_title), black, "Firmware-Update");
+        it.printf(40, 130, id(font_title), red, "${version}  auf  %s", id(fw_update).update_info.latest_version.c_str());
+        it.print(40, 220, id(font_text), black, "Die neue Firmware wird von GitHub geladen (etwa 1 Minute).");
+        it.print(40, 258, id(font_text), black, "Die LED blinkt während des Downloads.");
+        it.print(40, 320, id(font_text), black, "Danach startet das Gerät neu und zeigt wieder die Galerie.");
+        it.print(40, 358, id(font_text), black, "Bitte währenddessen nicht die Reset-Taste drücken.");
       } else if (id(setup_mode)) {
         it.fill(white);
         it.filled_rectangle(0, 0, 800, 12, red);
-        it.print(40, 50, id(font_title), black, "WiFi setup");
-        it.print(40, 130, id(font_text), black, "1. On your phone or computer, join the WiFi network");
+        it.print(40, 50, id(font_title), black, "WLAN einrichten");
+        it.print(40, 130, id(font_text), black, "1. Am Handy oder Computer mit diesem WLAN verbinden:");
         it.print(70, 168, id(font_title), red, "SwissMicros Gallery");
-        it.print(40, 240, id(font_text), black, "2. A setup page opens (or browse to http://192.168.4.1).");
-        it.print(40, 285, id(font_text), black, "3. Choose your WiFi network and enter its password.");
-        it.print(40, 350, id(font_text), black, "The device then checks GitHub for firmware updates once a day.");
-        it.print(40, 388, id(font_text), black, "Closes after 5 minutes. Hold the green button to restart.");
+        it.print(40, 240, id(font_text), black, "2. Die Einrichtungsseite öffnet sich (sonst http://192.168.4.1).");
+        it.print(40, 285, id(font_text), black, "3. Dein WLAN auswählen und das Passwort eingeben.");
+        it.print(40, 350, id(font_text), black, "Danach sucht das Gerät täglich auf GitHub nach Updates.");
+        it.print(40, 388, id(font_text), black, "Schliesst nach 5 Minuten. Grüne Taste halten: neu starten.");
         it.printf(40, 440, id(font_text), black, "Firmware ${version}");
       } else if (id(weather_mode)) {
-        const auto blue = Color(0, 0, 255), yellow = Color(255, 255, 0);
-        const Color icon_colors[] = {black, yellow, blue, red};
-        static const char *const weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+        const auto blue = Color(0, 0, 255);
+        static const char *const weekdays[] = {"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"};
         const WeatherData &w = weather_data;
         it.fill(white);
         if (!w.valid) {
           it.filled_rectangle(0, 0, 800, 12, blue);
-          it.print(40, 50, id(font_title), black, "Weather");
-          it.print(40, 130, id(font_text), black, id(wifi_configured) ? "Couldn't load the forecast. Trying again in 3 hours."
-                                                                      : "Set up WiFi first: hold the green button for 3 seconds.");
-          it.print(40, 168, id(font_text), black, "Green button: back to the gallery.");
+          it.print(40, 50, id(font_title), black, "Wetter");
+          it.print(40, 130, id(font_text), black, id(wifi_configured) ? "Vorhersage nicht geladen. Neuer Versuch in 3 Stunden."
+                                                                      : "Zuerst WLAN einrichten: grüne Taste 3 Sekunden halten.");
+          it.print(40, 168, id(font_text), black, "Grüne Taste: zurück zur Galerie.");
         } else {
+          int tip_first = 0, tip_len = 0;
+          const bool tip = weather_tip(tip_first, tip_len);
           for (int p = 0; p < WEATHER_PLACES; p++) {
             const WeatherPlace &place = w.places[p];
-            const int y0 = p * 228;
-            it.filled_rectangle(0, y0, 800, 40, blue);
-            it.print(16, y0 + 20, id(font_temp), white, TextAlign::CENTER_LEFT, WEATHER_NAMES[p]);
+            // Mirrored: Sagogn's bar above its days, Stäfa's below, the trip tip in between.
+            // The day names only once, at the top. y0 is the icons' centre line.
+            const int bar = p == 0 ? 0 : 404, y0 = p == 0 ? 110 : 296;
+            it.filled_rectangle(0, bar, 800, 36, blue);
+            it.print(16, bar + 18, id(font_temp), white, TextAlign::CENTER_LEFT, WEATHER_NAMES[p]);
             if (!std::isnan(place.t_now))
-              it.printf(784, y0 + 20, id(font_text), white, TextAlign::CENTER_RIGHT, "now %.0f°", place.t_now);
-            for (int i = 0; i < WEATHER_DAYS; i++) {
-              const WeatherDay &d = place.days[i];
+              it.printf(784, bar + 18, id(font_text), white, TextAlign::CENTER_RIGHT, "jetzt %.0f°", place.t_now);
+            for (int i = 0; i < WEATHER_PAGE_DAYS; i++) {
+              const int day = weather_page * WEATHER_PAGE_DAYS + i;
+              const WeatherDay &d = place.days[day];
               const int cx = 80 + 160 * i;
-              if (i == 0)
-                it.print(cx, y0 + 62, id(font_text), black, TextAlign::CENTER, "Today");
-              else
-                it.printf(cx, y0 + 62, id(font_text), black, TextAlign::CENTER, "%s %d", weekdays[d.weekday], d.day);
-              it.print(cx, y0 + 110, id(font_icon), icon_colors[weather_icon_color(d.code)], TextAlign::CENTER,
-                       weather_icon(d.code));
-              it.print(cx, y0 + 160, id(font_temp), black, TextAlign::CENTER, "/");
-              it.printf(cx - 10, y0 + 160, id(font_temp), red, TextAlign::CENTER_RIGHT, "%.0f°", d.t_max);
-              it.printf(cx + 10, y0 + 160, id(font_temp), blue, TextAlign::CENTER_LEFT, "%.0f°", d.t_min);
-              const bool wet = d.precip_mm >= 0.1f;
+              if (p == 0 && day == 0)
+                it.print(cx, 56, id(font_text), black, TextAlign::CENTER, "Heute");
+              else if (p == 0)
+                it.printf(cx, 56, id(font_text), black, TextAlign::CENTER, "%s %d.", weekdays[d.weekday], d.day);
+              weather_draw::icon(it, cx, y0, d);
+              it.print(cx, y0 + 55, id(font_temp), black, TextAlign::CENTER, "/");
+              it.printf(cx - 10, y0 + 55, id(font_temp), red, TextAlign::CENTER_RIGHT, "%.0f°", d.t_max);
+              it.printf(cx + 10, y0 + 55, id(font_temp), blue, TextAlign::CENTER_LEFT, "%.0f°", d.t_min);
+              // Decimal comma: "2,1 mm".
+              const int tenths = std::isnan(d.precip_mm) ? 0 : int(std::lround(d.precip_mm * 10));
+              const auto wet_color = tenths >= 1 ? blue : black;
               if (d.precip_prob >= 0)
-                it.printf(cx, y0 + 194, id(font_note), wet ? blue : black, TextAlign::CENTER, "%.1f mm  %d%%",
-                          d.precip_mm, d.precip_prob);
+                it.printf(cx, y0 + 86, id(font_note), wet_color, TextAlign::CENTER, "%d,%d mm  %d%%", tenths / 10,
+                          tenths % 10, d.precip_prob);
               else
-                it.printf(cx, y0 + 194, id(font_note), wet ? blue : black, TextAlign::CENTER, "%.1f mm", d.precip_mm);
+                it.printf(cx, y0 + 86, id(font_note), wet_color, TextAlign::CENTER, "%d,%d mm", tenths / 10, tenths % 10);
             }
           }
+          // Between the halves: suggest a trip to Sagogn.
+          if (tip) {
+            float away_h = 0, home_h = 0, away_t = 0, home_t = 0;
+            for (int i = tip_first; i < tip_first + tip_len; i++) {
+              away_h += w.places[WEATHER_AWAY].days[i].sun_h;
+              home_h += w.places[WEATHER_HOME].days[i].sun_h;
+              away_t += w.places[WEATHER_AWAY].days[i].t_max;
+              home_t += w.places[WEATHER_HOME].days[i].t_max;
+            }
+            const WeatherDay &a = w.places[WEATHER_AWAY].days[tip_first];
+            const WeatherDay &b = w.places[WEATHER_AWAY].days[tip_first + tip_len - 1];
+            it.filled_rectangle(0, 214, 800, 32, red);
+            it.printf(400, 230, id(font_tip), white, TextAlign::CENTER,
+                      "Ab nach %s! %s %d.%d. – %s %d.%d.: %d statt %d Std. Sonne, %d° statt %d°",
+                      WEATHER_NAMES[WEATHER_AWAY], weekdays[a.weekday], a.day, a.month, weekdays[b.weekday], b.day,
+                      b.month, int(std::lround(away_h / tip_len)), int(std::lround(home_h / tip_len)),
+                      int(std::lround(away_t / tip_len)), int(std::lround(home_t / tip_len)));
+          }
           if (w.stale)
-            it.printf(16, 464, id(font_note), red, TextAlign::CENTER_LEFT,
-                      "Offline: forecast from %s, retrying every 3 hours", w.updated);
+            it.printf(16, 464, id(font_note), red, TextAlign::CENTER_LEFT, "Offline seit %s, neuer Versuch alle 3 h",
+                      w.updated);
           else
-            it.printf(16, 464, id(font_note), black, TextAlign::CENTER_LEFT, "Updated %s, next update at %02d:00", w.updated,
-                      WEATHER_REFRESH_HOUR);
+            it.printf(16, 464, id(font_note), black, TextAlign::CENTER_LEFT, "Aktualisiert %s, nächste um %02d:00",
+                      w.updated, WEATHER_REFRESH_HOUR);
+          // Which button shows the other days (left of the battery indicator).
+          const int other = weather_page + 1 < WEATHER_PAGES ? weather_page + 1 : weather_page - 1;
+          it.printf(668, 464, id(font_note), black, TextAlign::CENTER_RIGHT, "%s Taste: Tage %d–%d",
+                    other > weather_page ? "Rechte" : "Linke", other * WEATHER_PAGE_DAYS + 1,
+                    (other + 1) * WEATHER_PAGE_DAYS);
         }
       } else {
         // Two pixels per byte, high nibble first; values index GALLERY_PALETTE.
@@ -562,8 +613,8 @@ display:
         const float crash_v = gallery_battery_crash_v();
         if (crash_v > 0) {
           it.filled_rectangle(0, 0, 800, 36, red);
-          it.printf(400, 18, id(font_text), white, TextAlign::CENTER,
-                    "Battery ran empty during a refresh at %.2f V (%d%%)", crash_v, gallery_battery_percent(crash_v));
+          it.printf(400, 18, id(font_text), white, TextAlign::CENTER, "Akku bei der Aktualisierung leer geworden: %.2f V (%d%%)",
+                    crash_v, gallery_battery_percent(crash_v));
         }
       }
 
@@ -573,8 +624,8 @@ display:
         const int pct = gallery_battery_percent(v);
         // Fill colour by charge: green > 50 %, yellow 21-50 %, red <= 20 %.
         const auto fill = pct > 50 ? Color(0, 255, 0) : pct > 20 ? Color(255, 255, 0) : red;
-        const int x = 734, y = 452, w = 36, h = 18;  // battery body
-        it.filled_rectangle(684, 446, 116, 30, white);
+        const int x = 734, y = 455, w = 36, h = 18;  // battery body, centred on the weather footer line (464)
+        it.filled_rectangle(684, y - 6, 116, 30, white);
         it.printf(x - 6, y + h / 2, id(font_small), black, TextAlign::CENTER_RIGHT, "%d%%", pct);
         it.rectangle(x, y, w, h, black);
         it.rectangle(x + 1, y + 1, w - 2, h - 2, black);
